@@ -81,22 +81,6 @@ class ADSOptimizer {
       }
     }
 
-    /*val rddDocs = rddRaw.filter(item => {
-      item._1 >= 0
-    }).reduceByKey(_ + _)
-
-    //println(s"So tai lieu la: ${rddDocs.count}")
-
-    val rddTerms = rddRaw.filter(item => {
-      item._1 < 0
-    })
-
-    //println(s"So tu la: ${rddTerms.count}")
-
-    this.documents = rddDocs.union(rddTerms)*/
-
-    //println(s"Tong so dinh la: ${documents.count}")
-
     this.k = k
     this.t = t
     this.vocabSize = vocabSize.toInt
@@ -116,23 +100,24 @@ class ADSOptimizer {
 
     // re-sampling
     val newDocument = documents.map {
-      case (docId, docTopicCounts, termArray) =>
+      case (docId, docTopicCounts, termArray) => {
         var deltaDocTopicCnt = new TopicCounts(docTopicCounts.length)
         val newTermArray = termArray.map {
-          case (termId, termTopicCounts) =>
+          case (termId, termTopicCounts) => {
             val deltaTopic = computePTopic(termId.toInt, docTopicCounts, termTopicCounts, N_k, W, hiddenTopic, eta, alpha, dPow, dPowSum)
             deltaDocTopicCnt += deltaTopic
             (termId, termTopicCounts + deltaTopic)
+          }
         }
-        (docId, docTopicCounts + deltaDocTopicCnt, newTermArray)
+        (docId, docTopicCounts + deltaDocTopicCnt, newTermArray, deltaDocTopicCnt)
+      }
     }
 
-    this.documents = newDocument
+    this.documents = newDocument.map(x => (x._1, x._2, x._3))
     this.documents.persist(StorageLevel.MEMORY_AND_DISK)
-    newDocument.unpersist(false)
     // re-count global topic assignment
-    globalTopicTotals = computeGlobalTopicTotals()
-
+    globalTopicTotals += newDocument.map(_._4).reduce(_+_)
+    newDocument.unpersist(false)
     this
   }
 

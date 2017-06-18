@@ -39,12 +39,12 @@ object ADSLite {
           return
         } else {
           //~~~~~~~~~~~ Spark ~~~~~~~~~~~
-          val conf = new SparkConf().setAppName("ADS-Lite").setMaster("local[*]")
+          val conf = new SparkConf().setAppName("ADS-Lite").setMaster("spark://PTNHTTT05:7077")
             .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
             .registerKryoClasses(Array(classOf[LDA], classOf[ADSOptimizer], classOf[Model]))
           val spark = SparkSession.builder().config(conf).getOrCreate()
           val sc = spark.sparkContext
-          //sc.setLogLevel("ERROR")
+          sc.setLogLevel("ERROR")
 
           //~~~~~~~~~~~ Body ~~~~~~~~~~~
           // Load documents, and prepare them for LDA.
