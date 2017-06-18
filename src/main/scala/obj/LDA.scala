@@ -71,41 +71,48 @@ object LDA {
   def term2index(term: Int): Long = -(1 + term.toLong)
 
   def index2term(termIndex: Long): Int = -(1 + termIndex).toInt
+  
+  /*def term2index(term: Int, vocabSizeDotDocId: Long): Long = -(1 + term.toLong + vocabSizeDotDocId)
 
-  def isDocumentVertex(v: (VertexId, _)): Boolean = v._1 >= 0
+  def index2term(termIndex: Long, vocabSize: Long): Int = -(1 + termIndex + vocabSize * termIndex2docIndex(termIndex, vocabSize)).toInt
 
-  def isTermVertex(v: (VertexId, _)): Boolean = v._1 < 0
+  def termIndex2docIndex(termIndex: Long, vocabSize: Long): Int = (-(termIndex + 1) % vocabSize).toInt*/
+
+  def isDocument(v: (Long, _)): Boolean = v._1 >= 0
+
+  def isTerm(v: (Long, _)): Boolean = v._1 < 0
 
   /**
    * Compute gamma_{wjk}, a distribution over topics k.
    */
   def computePTopic(
-    wordId: Int,
+    termId: Int,
     docTopicCounts: TopicCounts,
     termTopicCounts: TopicCounts,
     totalTopicCounts: TopicCounts,
     vocabSize: Int,
-    K: Int,
+    hiddenTopic: Int,
     eta: Double,
     alpha: Double,
     dPow: Array[Array[(Int, Double)]],
     dPowSum: Array[Double]): TopicCounts = {
+    //val startAll = System.nanoTime()
     val T = docTopicCounts.length
     val N_j = docTopicCounts.data
     val N_w = termTopicCounts.data
     val N = totalTopicCounts.data
     val Weta = vocabSize * eta
     val deltaTopic = BDV.fill[Double](T)(0d)
-    for (numTopic <- 0 until N_w.length) { // for each old topic
-      for (numWord <- 0 until N_w(numTopic).toInt) { // for each word in this topic
+    for (numTopic <- 0 until T) { // for each old topic
+      for (numWord <- 0 until N_w(numTopic).toInt) { // for each instance of word in this topic
         var gamma_wj = new Array[Double](T)
         //do multinominal sampling via cumulative method
-        for (k <- 0 until K) {
+        for (k <- 0 until hiddenTopic) {
           gamma_wj(k) = (N_w(k) - 1 + eta) * (N_j(k) - 1 + alpha) / (N(k) - 1 + Weta)
         }
-        for (k <- K until T) {
-          val b = k - K
-          val dPowBW = if (dPow(b).filter(_._1 == wordId).length > 0) dPow(b).filter(_._1 == wordId)(0)._2 else 1
+        for (k <- hiddenTopic until T) {
+          val b = k - hiddenTopic
+          val dPowBW = if (dPow(b).filter(_._1 == termId).length > 0) dPow(b).filter(_._1 == termId)(0)._2 else 1 // check if term contains in knowlegde source
           gamma_wj(k) = (N_w(k) - 1 + dPowBW) * (N_j(k) - 1 + alpha) / (N(k) - 1 + dPowSum(b))
         }
         // cumulate multinomial parameters
@@ -329,8 +336,8 @@ class LDA private (
     this.maxIterations = maxIterations
     this
   }
-  
-  def setKnowledge(knowledge: Array[Array[(Int, Int)]]):this.type ={
+
+  def setKnowledge(knowledge: Array[Array[(Int, Int)]]): this.type = {
     require(knowledge != null,
       s"Knowledge source must be not null but got ${knowledge}")
     this.knowledge = knowledge
@@ -363,14 +370,11 @@ class LDA private (
   def run(documents: RDD[(Long, Vector)], knowledge: Array[Array[(Int, Int)]], vocabSize: Long): LDAModel = {
     val state = adsOptimizer.initialize(documents, knowledge, vocabSize, this)
     var iter = 0
-    val iterationTimes = Array.fill[Double](maxIterations)(0)
     while (iter < maxIterations) {
-      val start = System.nanoTime()
+      //println(s"Iteration: $iter")
       state.next()
-      val elapsedSeconds = (System.nanoTime() - start) / 1e9
-      iterationTimes(iter) = elapsedSeconds
       iter += 1
     }
-    state.getADSModel(iterationTimes)
+    state.getADSModel()
   }
 }

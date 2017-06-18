@@ -18,6 +18,8 @@ import main.scala.obj.LDAModel
 import main.scala.obj.LDA
 import main.scala.connector.File2KS
 import org.apache.spark.sql.SparkSession
+import main.scala.helper.ADSOptimizer
+import main.scala.obj.Model
 
 object ADSLite {
 
@@ -37,9 +39,12 @@ object ADSLite {
           return
         } else {
           //~~~~~~~~~~~ Spark ~~~~~~~~~~~
-          val conf = new SparkConf().setAppName("ADS-LDA").setMaster("spark://PTNHTTT05:7077")
+          val conf = new SparkConf().setAppName("ADS-Lite").setMaster("local[*]")
+            .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+            .registerKryoClasses(Array(classOf[LDA], classOf[ADSOptimizer], classOf[Model]))
           val spark = SparkSession.builder().config(conf).getOrCreate()
-          val sc =  spark.sparkContext
+          val sc = spark.sparkContext
+          //sc.setLogLevel("ERROR")
 
           //~~~~~~~~~~~ Body ~~~~~~~~~~~
           // Load documents, and prepare them for LDA.
@@ -87,29 +92,7 @@ object ADSLite {
             println()
           }
 
-          // Print the topics, showing the top-weighted terms for each topic.
-          val topicIndices = ldaModel.describeTopics(params.twords)
-          val topics = topicIndices.map(topic => {
-            topic.map {
-              case (termIndex, weight) =>
-                (vocabArray(termIndex), weight)
-            }
-          })
-          println(s"${params.K} topics:")
-          topics.zipWithIndex.foreach {
-            case (topic, i) =>
-              println(s"---------- TOPIC $i ---------")
-              topic.foreach {
-                case (term, weight) =>
-                  println(s"$term\t$weight")
-              }
-              println("---------------------------\n")
-          }
-
-          //ldaModel.countGraphInfo()
-
           sc.stop()
-          //spark.stop()
 
         }
       }

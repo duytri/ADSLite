@@ -18,6 +18,7 @@ import org.json4s.jackson.JsonMethods._
 import main.scala.helper.Utils
 import main.scala.helper.BPQ
 import main.scala.helper.ADSOptimizer
+import main.scala.obj.LDA.TopicCounts
 
 abstract class Model {
 
@@ -78,14 +79,13 @@ abstract class Model {
  * This model stores the inferred topics, the full training dataset, and the topic distributions.
  */
 class LDAModel(
-  val graph: Graph[LDA.TopicCounts, LDA.TokenCount],
+  val documents: RDD[(Long, TopicCounts, Array[(Long, TopicCounts)])],
   val globalTopicTotals: LDA.TopicCounts,
   val k: Int,
   val t: Int,
   val vocabSize: Int,
   override val docConcentration: Vector,
-  override val topicConcentration: Double,
-  val iterationTimes: Array[Double])
+  override val topicConcentration: Double)
     extends Model {
 
   import LDA._
@@ -95,8 +95,8 @@ class LDAModel(
     val phi = computePhi
     val result = Array.ofDim[(Int, Double)](k, maxTermsPerTopic)
     for (topic <- 0 until k) {
-      val maxVertexPerTopic = phi.filter(_._1 == topic).takeOrdered(maxTermsPerTopic)(Ordering[Double].reverse.on(_._3))
-      result(topic) = maxVertexPerTopic.map {
+      val maxTermPerTopic = phi.filter(_._1 == topic).takeOrdered(maxTermsPerTopic)(Ordering[Double].reverse.on(_._3))
+      result(topic) = maxTermPerTopic.map {
         case (topicId, termId, phi) =>
           (index2term(termId), phi)
       }
@@ -104,59 +104,52 @@ class LDAModel(
     return result
   }
 
-  def computeTheta(): RDD[(VertexId, Int, Double)] = {
+  def computeTheta(): RDD[(Long, Int, Double)] = {
     val alpha = this.docConcentration(0)
-    graph.vertices.filter(LDA.isDocumentVertex).flatMap {
-      case (docId, topicCounts) =>
-        topicCounts.mapPairs {
-          case (topicId, wordCounts) =>
-            val thetaMK = ((wordCounts + alpha) / (topicCounts.data.sum + topicCounts.length * alpha))
-            (docId, topicId, thetaMK)
-        }.toArray
+    val numTopics = this.t
+    documents.flatMap {
+      case (docId, docTopicCounts, termArray) =>
+        docTopicCounts.activeIterator.map {
+          case (topicId, termCounts) =>
+            (docId, topicId, (termCounts + alpha) / (docTopicCounts.reduce(_ + _) + numTopics * alpha))
+        }
     }
   }
 
-  def computePhi(): RDD[(Int, VertexId, Double)] = {
+  def computePhi(): RDD[(Int, Long, Double)] = {
+    val V = vocabSize
     val eta = this.topicConcentration
     val wordTopicCounts = this.globalTopicTotals
-    val vocabSize = this.vocabSize
-    graph.vertices.filter(LDA.isTermVertex).flatMap {
-      case (termId, topicCounts) =>
-        topicCounts.mapPairs {
-          case (topicId, wordCounts) =>
-            var phiKW = 0d
-            if (topicId < k) {
-              phiKW = ((wordCounts + eta) / (wordTopicCounts.data(topicId) + vocabSize * eta))
-            } else {
-              phiKW = ((wordCounts + eta) / (wordTopicCounts.data(topicId) + vocabSize * eta))
-            }
-            (topicId, termId, phiKW)
-        }.toArray
+    documents.flatMap(_._3).reduceByKey(_ + _).flatMap { // sum all words in corpus and flatMap
+      case (wordId, topicCounts) =>
+        topicCounts.activeIterator.map {
+          case (topicId, termCounts) =>
+            (topicId, wordId, ((termCounts + eta) / (wordTopicCounts(topicId) + V * eta)))
+        }
     }
   }
 
-  def computePerplexity(tokenSize: Long): Double = {
+  def computePerplexity(tokenSize: Double): Double = {
     val alpha = this.docConcentration(0)
+    val numTopics = this.t
+    val V = vocabSize
     val eta = this.topicConcentration
     val wordTopicCounts = this.globalTopicTotals
-    val vocabSize = this.vocabSize
-    val sendMsg: EdgeContext[TopicCounts, TokenCount, Double] => Unit = (edgeContext) => {
-      var thetaDotPhi = 0d
-      edgeContext.srcAttr.activeIterator.foreach { // in a doc, foreach topic and number of words assigned to
-        case (topicId1, wordCount) =>
-          edgeContext.dstAttr.activeIterator.filter(_._1 == topicId1).foreach { // in a word, for each topic and number of instances assigned to
-            case (topicId2, instanceCount) =>
-              thetaDotPhi += ((wordCount + alpha) / (edgeContext.srcAttr.data.sum + edgeContext.srcAttr.length * alpha)) *
-                ((instanceCount + eta) / (wordTopicCounts.data(topicId1) + vocabSize * eta))
+    var docSum = documents.map {
+      case (docId, docTopicCounts, termArray) => {
+        var wordSum = termArray.map {
+          case (wordId, termTopicCount) => {
+            var topicSum = termTopicCount.activeIterator.map {
+              case (topicId, termCounts) => {
+                termCounts * (termCounts + alpha) / (docTopicCounts.reduce(_ + _) + numTopics * alpha) * (termCounts + eta) / (wordTopicCounts(topicId) + V * eta)
+              }
+            }.fold(0d)(_ + _)
+            math.log(topicSum)
           }
+        }.fold(0d)(_ + _)
+        wordSum
       }
-      edgeContext.sendToDst(math.log(thetaDotPhi))
-    }
-    val mergMsg: (Double, Double) => Double =
-      (a, b) =>
-        a + b
-    val docSum = graph.aggregateMessages[Double](sendMsg, _ + _) // mergMsg)
-      .map(_._2).reduce(_ + _)
+    }.fold(0d)(_ + _)
     return math.exp(-1 * docSum / tokenSize)
   }
 }
